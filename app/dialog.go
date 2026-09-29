@@ -14,7 +14,6 @@ type model struct {
 	percent          float64
 	progress         progress.Model
 	downloadFullPath string
-	quit             bool
 }
 
 func (m model) Init() tea.Cmd {
@@ -37,7 +36,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.percent += 0.25
 		if m.percent > 1.0 {
 			m.percent = 1.0
-			m.quit = true
 			time.Sleep(1 * time.Second)
 			return m, tea.Quit
 		}
@@ -54,14 +52,6 @@ const (
 
 func (m model) View() tea.View {
 	pad := strings.Repeat(" ", padding)
-
-	if m.quit {
-		v := tea.NewView("")
-
-		v.AltScreen = false
-
-		return v
-	}
 
 	output := "\n" +
 		pad + "📥 " + m.downloadFullPath + "\n\n" +
