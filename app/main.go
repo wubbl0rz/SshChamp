@@ -37,7 +37,7 @@ func run() int {
 	if !term.IsTerminal(stdinFd) {
 		cmd := exec.Command("ssh", os.Args[1:]...)
 		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdin
+		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return exitCode(cmd.Run())
 	}
