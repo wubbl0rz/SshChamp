@@ -1,32 +1,76 @@
 package main
 
 import (
+	"app/tty"
+	"app/ui"
+	"cmp"
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/dustin/go-humanize"
+	"golang.design/x/clipboard"
 	"golang.org/x/term"
-
-	"charm.land/bubbles/v2/progress"
-	tea "charm.land/bubbletea/v2"
 )
 
 //go:embed exec_bash.sh
 var execBashSource string
 
-var ioHandler *StdInOutHandler
-
 type Config struct {
-	downloadDirectory string
+	DownloadDirectory    string
+	IsClipboardAvailable bool
 }
 
 func main() {
 	os.Exit(run())
+}
+
+func startSsh(args ...string) (error, *exec.Cmd) {
+	cmd := exec.CommandContext(context.Background(), "ssh", args...)
+
+	cmdPty, err := pty.Start(cmd)
+	if err != nil {
+		return err, cmd
+	}
+	defer func() { _ = cmdPty.Close() }()
+	defer func() { _ = cmd.Cancel() }()
+
+	errCh := make(chan error)
+
+	go func() {
+		// error or ssh command is finished
+		_, err := io.Copy(NewScanner(os.Stdout, func(args map[string]string, data []byte) bool {
+			result, err := handleFile(args, data)
+			if err != nil {
+				errCh <- err // exit on error
+				return true
+			}
+			return result
+		}), cmdPty)
+
+		if _, ok := errors.AsType[*fs.PathError](err); ok {
+			err = nil
+		}
+
+		errCh <- err
+	}()
+
+	go func() {
+		// exits only on error so ssh command might still be running
+		errCh <- tty.Stdin.RedirectTo(cmdPty)
+	}()
+
+	e := <-errCh
+	return e, cmd
 }
 
 func run() int {
@@ -41,46 +85,45 @@ func run() int {
 		return exitCode(cmd.Run())
 	}
 
+	if err := tty.Stdin.IsReady(); err != nil {
+		return exitCode(err)
+	}
+	defer tty.Stdin.Close()
+
+	clip := true
+	if err := clipboard.Init(); err != nil {
+		clip = false
+	}
+
 	extraArgs := []string{
 		"-o",
 		"RequestTTY=yes",
 		"-o",
 		fmt.Sprintf(`RemoteCommand=/bin/bash -c '
+			export CHAMP_HAS_CLIP=%s
 			%s
-		'`, execBashSource),
+		'`, strconv.FormatBool(clip), execBashSource),
 	}
 
 	extraArgs = append(extraArgs, os.Args[1:]...)
 
-	cmd := exec.Command("ssh", extraArgs...)
-
-	var err error
-
-	ioHandler, err = NewStdInOutHandler()
-
-	if err != nil {
-		return 255
-	}
-
-	err = ioHandler.Run(cmd, NewScanner(os.Stdout, handleFile))
-
-	if err != nil {
-		return 255
-	}
+	// this is intentional cmd is always non nil but during command execution could have some errors
+	err, cmd := startSsh(extraArgs...)
 
 	code := cmd.Wait()
 
-	return exitCode(code)
+	return exitCode(cmp.Or(err, code))
 }
 
 func exitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode()
+
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		return exitErr.ExitCode()
 	}
+
 	_, _ = fmt.Fprintln(os.Stderr, err)
 	return 255
 }
@@ -88,9 +131,22 @@ func exitCode(err error) int {
 // TODO: notifcation post
 // TODO: copy to clipboard
 // TODO: handle images (inline ==1)
-func handleFile(args map[string]string, data []byte) bool {
+func handleFile(args map[string]string, data []byte) (bool, error) {
 	if args["inline"] == "1" {
-		return false
+		return false, nil
+	}
+
+	if t, ok := args["target"]; ok && t == "clip" {
+		err := clipboard.Init()
+
+		if err != nil {
+			err = ui.ShowMessagePrompt("clipboard is not available")
+			return true, err
+		}
+
+		ctx := context.Background()
+		_, err = clipboard.Write(ctx, clipboard.FmtText, data)
+		return true, err
 	}
 
 	home, _ := os.UserHomeDir()
@@ -108,42 +164,33 @@ func handleFile(args map[string]string, data []byte) bool {
 	//TODO: make better :p
 	name := filepath.Base(args["name"]) // strip ../ or other paths only keep last element
 	if name == "" || name == "." || name == "/" || name == ".." {
-		return false
+		return false, nil
 	}
 
 	timestamp := "." + time.Now().Format("2006-01-02_15:04:05")
 
 	fullPath := filepath.Join(dir, name+timestamp)
 
-	if !showPrompt("📥 New file from:" + host + ". Accept?") {
-		return true
+	result, err := ui.ShowConfirmPrompt("📥 New file (" + name + ") from: " + host + ". Accept?")
+
+	if err != nil || !result {
+		return true, err
 	}
 
 	_ = os.MkdirAll(dir, 0o750)
 
 	if err := os.WriteFile(fullPath, data, 0o644); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "\r\nError: %v\r\n", err)
-		return true
+		return true, err
 	}
 
 	size := humanize.Bytes(uint64(len(data)))
 
-	prog := progress.New()
-
-	ioHandler.GetExclusiveInput(func(reader *os.File) {
-		if _, err := tea.NewProgram(model{progress: prog, downloadFullPath: fullPath}, tea.WithInput(reader)).Run(); err != nil {
-			panic(err)
+	_, err = ui.ShowSpinner(size, func(setPercentage func(percentage uint32)) {
+		for p := range uint32(100) {
+			setPercentage(p)
+			time.Sleep(time.Millisecond * 5)
 		}
 	})
 
-	msg := fmt.Sprintf("\r\n%s (%s)\r\n", fullPath, size)
-	err := notify("📥 File saved", msg)
-
-	if err != nil {
-		//fmt.Printf("\\e[?1049h")
-		//_, _ = fmt.Fprintf(os.Stderr, msg)
-		//fmt.Printf("\\e[?1049l")
-	}
-
-	return true
+	return true, err
 }
