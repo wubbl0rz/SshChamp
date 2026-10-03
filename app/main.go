@@ -192,5 +192,8 @@ func handleFile(args map[string]string, data []byte) (bool, error) {
 		}
 	})
 
+	msg := fmt.Sprintf("\r\n%s (%s)\r\n", fullPath, size)
+	_ = notify("📥 File saved", msg)
+
 	return true, err
 }

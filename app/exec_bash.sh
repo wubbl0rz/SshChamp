@@ -51,7 +51,13 @@ EOF
   # oder besser -R für stream input
   if [ ! -t 0 ]; then
     local name="stdin"
-    local data=$(tee >(cat >&2) | base64 -w0)
+
+    if [ -z "$1" ]; then
+      local data=$(base64 -w0)
+    else
+      local data=$(tee >(cat >&2) | base64 -w0)
+    fi
+
     local size=$(printf '%%s' "$data" | base64 -d | wc -c)
 
     if [ "$target" = "clip" ]; then
