@@ -31,21 +31,31 @@ EOF
 
   if [ "$2" = "--clip" ]; then
     #TODO
-    if ! $CHAMP_HAS_CLIP; then
+    #if ! $CHAMP_HAS_CLIP; then
+    if false; then
       echo "error: clipboard on local machine not available"
       return 255
     fi
     target="clip"
   fi
-  
+
+  local escape_output="true"
+
+  if [ "$3" = "-R" ]; then
+    escape_output="false"
+  fi
+
+  # TODO option for copy base64 to clipboard if binary
+  # TODO accept raw input -R
   # todo -R für not escape binary input
+  # oder besser -R für stream input
   if [ ! -t 0 ]; then
     local name="stdin"
     local data=$(tee >(cat >&2) | base64 -w0)
     local size=$(printf '%%s' "$data" | base64 -d | wc -c)
 
     if [ "$target" = "clip" ]; then
-      check_input "$data" "$size" || { sleep 1; reset; return 255; }
+      check_input "$data" "$size" || { return 255; }
     fi
   else
     if [ ! -f "$1" ]; then
