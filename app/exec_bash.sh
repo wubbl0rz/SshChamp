@@ -58,6 +58,9 @@ EOF
       local data=$(tee >(cat >&2) | base64 -w0)
     fi
 
+    # check input with grep for binary
+    # bash function instead of cat -v
+
     local size=$(printf '%%s' "$data" | base64 -d | wc -c)
 
     if [ "$target" = "clip" ]; then
