@@ -39,28 +39,10 @@ EOF
     target="clip"
   fi
 
-  local escape_output="true"
-
-  if [ "$3" = "-R" ]; then
-    escape_output="false"
-  fi
-
   # TODO option for copy base64 to clipboard if binary
-  # TODO accept raw input -R
-  # todo -R für not escape binary input
-  # oder besser -R für stream input
   if [ ! -t 0 ]; then
     local name="stdin"
-
-    if [ -z "$1" ]; then
-      local data=$(base64 -w0)
-    else
-      local data=$(tee >(cat >&2) | base64 -w0)
-    fi
-
-    # check input with grep for binary
-    # bash function instead of cat -v
-
+    local data=$(base64 -w0)
     local size=$(printf '%%s' "$data" | base64 -d | wc -c)
 
     if [ "$target" = "clip" ]; then
@@ -112,8 +94,55 @@ EOF
   fi
 };
 
+champ_sudo() {
+  usage() {
+    cat <<'EOF'
+Usage: champ_sudo <user>  -  sudo wrapper to keep all champ_* functions
+
+Example:
+  # become root
+  champ_sudo
+  # switch user
+  champ_sudo user
+EOF
+  }
+
+  if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    usage
+    return 0
+  fi
+
+  if [ -z "$1" ]; then
+    sudo -u root bash -c "$(declare -f champ_push champ_clip champ_sudo); export -f champ_push champ_clip champ_sudo; exec bash -l"
+    return 0
+  fi
+  sudo -u "$1" bash -c "$(declare -f champ_push champ_clip champ_sudo); export -f champ_push champ_clip champ_sudo; exec bash -l"
+}
+
+champ_ssh() {
+  usage() {
+    cat <<'EOF'
+Usage: champ_ssh <user@host>  -  ssh wrapper to keep all champ_* functions
+EOF
+  }
+
+  if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    usage
+    return 0
+  fi
+
+  local remote_cmd
+  remote_cmd="$(declare -f champ_push champ_clip champ_sudo champ_ssh)"
+  remote_cmd+="; export -f champ_push champ_clip champ_sudo champ_ssh"
+  remote_cmd+="; exec bash -l"
+
+  ssh -t "$@" "/bin/bash -c $(printf "%%q" "$remote_cmd")"
+}
+
 export -f champ_push
 export -f champ_clip
+export -f champ_sudo
+export -f champ_ssh
 
 exec /bin/bash --login
 
