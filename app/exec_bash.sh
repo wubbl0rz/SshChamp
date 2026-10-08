@@ -1,4 +1,19 @@
-champ_push() {
+_champ_init() {
+  # max 10MB for clipboard
+  export CHAMP_MAX_CLIPBOARD_SIZE=10485760
+  export CHAMP_HAS_CLIP='{{.CHAMP_HAS_CLIP}}'
+
+  for f in $(compgen -A function | grep -E '^_?champ_'); do
+    export -f "${f?}"
+    if [ "$1" = "--show" ]; then
+      declare -f "${f?}"
+    fi
+  done
+}
+
+_champ_err() { printf 'error: %s\n' "$*" >&2; return 255; }
+
+champ_push() (
   usage() {
     cat <<'EOF'
 Usage: champ_push <file>  -  send file to local machine
@@ -9,20 +24,21 @@ Example:
 EOF
   }
 
-  check_input() {
-    if ! printf '%%s' "$data" | base64 -d | grep -Iq '.'; then
-      echo -e "\n\nerror: binary data in input. this might break your clipboard.\n\n"
+  check_input() (
+    local data=$1 size=$2
+
+    if [ "$size" -gt "$CHAMP_MAX_CLIPBOARD_SIZE" ]; then
+      _champ_err "data is too big for the clipboard (>$(awk -v bytes="$CHAMP_MAX_CLIPBOARD_SIZE" 'BEGIN { printf "%.0f MiB\n", bytes / 1048576 }'))"
       return 255
     fi
 
-    # max 10MB for clipboard
-    if [ "$size" -gt 10485760 ]; then
-      echo -e "\n\nerror: data is really big for clipboard (>10MB).\n\n"
+    if ! printf '%s' "$data" | base64 -d | grep -Iq '.'; then
+      _champ_err "binary data in input. this might break your clipboard"
       return 255
     fi
-  }
+  )
 
-  if (([ -z "$1" ] || [ "$1" = "-" ] ) && [ -t 0 ]) || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  if { { [ -z "$1" ] || [ "$1" = "-" ]; } && [ -t 0 ]; } || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     usage
     return 0
   fi
@@ -30,48 +46,71 @@ EOF
   local target="file"
 
   if [ "$2" = "--clip" ]; then
-    #TODO
-    #if ! $CHAMP_HAS_CLIP; then
-    if false; then
-      echo "error: clipboard on local machine not available"
-      return 255
+    if ! "$CHAMP_HAS_CLIP"; then
+      _champ_err "clipboard on local machine not available"
     fi
     target="clip"
   fi
 
-  # TODO option for copy base64 to clipboard if binary
   if [ ! -t 0 ]; then
-    local name="stdin"
-    local data=$(base64 -w0)
-    local size=$(printf '%%s' "$data" | base64 -d | wc -c)
+    local name data size
+
+    name="stdin"
+    data=$(base64 -w0)
+    size=$(printf '%s' "$data" | base64 -d | wc -c)
 
     if [ "$target" = "clip" ]; then
       check_input "$data" "$size" || { return 255; }
     fi
   else
-    if [ ! -f "$1" ]; then
-      echo "error: $1 does not exist"
+    local source="$1"
+
+    if [ ! -e "$source" ]; then
+      _champ_err "file or directory ($1) does not exist"
       return 255
     fi
 
-    local file="$1"
-    local name=$(basename "$file")
-    local size=$(stat -c%%s "$file")
-    local data=$(base64 -w0 "$file")
+    local name size data is_directory
+    is_directory=false
+
+    if [ -d "$source" ]; then
+      is_directory=true
+      name="$(basename -- "$source").tar"
+      data=$(tar -C "$source" -cf - . | base64 -w0) || {
+        _champ_err "could not archive directory ($source)"
+        return 255
+      }
+    elif [ -f "$source" ]; then
+      name=$(basename -- "$source")
+      data=$(base64 -w0 < "$source") || {
+        _champ_err "could not read file ($source)"
+        return 255
+      }
+    else
+      _champ_err "not a regular file or directory ($source)"
+      return 255
+    fi
+
+    size=$(printf '%s' "$data" | base64 -d | wc -c)
+
+    if "$is_directory" && [ "$target" = "clip" ]; then
+      _champ_err "directory cannot be copied to clipboard ($source)"
+      return 255
+    fi
 
     if [ "$target" = "clip" ]; then
       check_input "$data" "$size" || return 255
     fi
   fi
 
-  [ -n "$TMUX" ] && tmux set -g allow-passthrough
+  [ -n "$TMUX" ] && tmux set -g allow-passthrough on
 
-  printf "\033]1337;File=name=%%s;size=%%s;host=%%s;target=%%s;directory=%%s;inline=0:%%s\a" "$(echo -n "$name" | base64 -w0)" "$size" $(hostname -f) "$target" "true" "$data"
+  printf "\033]1337;File=name=%s;size=%s;host=%s;target=%s;directory=%s;inline=0:%s\a" "$(echo -n "$name" | base64 -w0)" "$size" "$(hostname -f)" "$target" "$is_directory" "$data"
 
   [ -n "$TMUX" ] && tmux refresh-client
-};
+)
 
-champ_clip() {
+champ_clip() (
   usage() {
     cat <<'EOF'
 Usage: champ_clip <file>  -  send file to local clipboard
@@ -82,7 +121,7 @@ Example:
 EOF
   }
 
-  if ([ -z "$1" ] && [ -t 0 ]) || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  if  { [ -z "$1" ] && [ -t 0 ]; } || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     usage
     return 0
   fi
@@ -92,9 +131,9 @@ EOF
   else
     champ_push "$1" "--clip"
   fi
-};
+);
 
-champ_sudo() {
+champ_sudo() (
   usage() {
     cat <<'EOF'
 Usage: champ_sudo <user>  -  sudo wrapper to keep all champ_* functions
@@ -103,7 +142,7 @@ Example:
   # become root
   champ_sudo
   # switch user
-  champ_sudo user
+  champ_sudo <user>
 EOF
   }
 
@@ -112,14 +151,10 @@ EOF
     return 0
   fi
 
-  if [ -z "$1" ]; then
-    sudo -u root bash -c "$(declare -f champ_push champ_clip champ_sudo); export -f champ_push champ_clip champ_sudo; exec bash -l"
-    return 0
-  fi
-  sudo -u "$1" bash -c "$(declare -f champ_push champ_clip champ_sudo); export -f champ_push champ_clip champ_sudo; exec bash -l"
-}
+  sudo -u "${1:-root}" bash -c "$(_champ_init --show); _champ_init; exec bash -l"
+)
 
-champ_ssh() {
+champ_ssh() (
   usage() {
     cat <<'EOF'
 Usage: champ_ssh <user@host>  -  ssh wrapper to keep all champ_* functions
@@ -131,26 +166,21 @@ EOF
     return 0
   fi
 
-  local remote_cmd
-  remote_cmd="$(declare -f champ_push champ_clip champ_sudo champ_ssh)"
-  remote_cmd+="; export -f champ_push champ_clip champ_sudo champ_ssh"
-  remote_cmd+="; exec bash -l"
+  ssh -t "$@" "/bin/bash -c $(printf "%q" "$(_champ_init --show); _champ_init; exec bash -l")"
+)
 
-  ssh -t "$@" "/bin/bash -c $(printf "%%q" "$remote_cmd")"
-}
-
-export -f champ_push
-export -f champ_clip
-export -f champ_sudo
-export -f champ_ssh
+_champ_init
 
 exec /bin/bash --login
 
+# todo serverseite fragen ob unzip oder nicht
+# command to create scripts that can be passed to containers for example
+# TODO option for copy base64 to clipboard if binary
+# todo: alles in main func und nur die exporten ? <--- ne dann exportet der ja net die _* functions
+# todo edit command
 #todo support directories
 # todo support multiple files and *
-# todo handle stdin
 # TODO tmux passtrough
 # TODO clipboard handling
 # TODO: alle über gebliebenen Ptmux entfernen am ende
-# sudo alias
 # XDG_CONFIG_HOME

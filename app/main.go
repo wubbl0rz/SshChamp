@@ -3,9 +3,11 @@ package main
 import (
 	"app/tty"
 	"app/ui"
+	"bytes"
 	"cmp"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"text/template"
 	"time"
 
 	"github.com/creack/pty"
@@ -90,19 +93,25 @@ func run() int {
 	}
 	defer tty.Stdin.Close()
 
-	clip := true
+	hasClip := true
 	if err := clipboard.Init(); err != nil {
-		clip = false
+		hasClip = false
 	}
+
+	tmpl, err := template.New("script").Parse(execBashSource)
+
+	var script bytes.Buffer
+	tmpl.Execute(&script, map[string]string{
+		"CHAMP_HAS_CLIP": strconv.FormatBool(hasClip),
+	})
+
+	b64 := base64.StdEncoding.EncodeToString(script.Bytes())
 
 	extraArgs := []string{
 		"-o",
 		"RequestTTY=yes",
 		"-o",
-		fmt.Sprintf(`RemoteCommand=/bin/bash -c '
-			export CHAMP_HAS_CLIP=%s
-			%s
-		'`, strconv.FormatBool(clip), execBashSource),
+		fmt.Sprintf(`RemoteCommand=bash -c "$(echo %s | base64 -d)"`, b64),
 	}
 
 	extraArgs = append(extraArgs, os.Args[1:]...)
