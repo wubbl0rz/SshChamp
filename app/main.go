@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -168,6 +169,18 @@ func handleFile(args map[string]string, data []byte) (bool, error) {
 		host = h
 	}
 
+	// todo parse into struct all the args
+
+	d, ok := args["directory"]
+	if !ok {
+		return true, fmt.Errorf("missing directory argument")
+	}
+
+	isDirectory, err := strconv.ParseBool(d)
+	if err != nil {
+		return true, err
+	}
+
 	dir = filepath.Join(dir, host)
 
 	//TODO: make better :p
@@ -180,7 +193,7 @@ func handleFile(args map[string]string, data []byte) (bool, error) {
 
 	fullPath := filepath.Join(dir, name+timestamp)
 
-	result, err := ui.ShowConfirmPrompt("📥 New file (" + name + ") from: " + host + ". Accept?")
+	result, err := ui.ShowConfirmPrompt("New file (" + name + ") from: " + host + ". Accept?")
 
 	if err != nil || !result {
 		return true, err
@@ -188,8 +201,15 @@ func handleFile(args map[string]string, data []byte) (bool, error) {
 
 	_ = os.MkdirAll(dir, 0o750)
 
-	if err := os.WriteFile(fullPath, data, 0o644); err != nil {
-		return true, err
+	if isDirectory {
+		nameWithoutExt := strings.TrimSuffix(name, ".tar")
+		if err := Untar(data, filepath.Join(dir, nameWithoutExt+timestamp)); err != nil {
+			return true, err
+		}
+	} else {
+		if err := os.WriteFile(fullPath, data, 0o644); err != nil {
+			return true, err
+		}
 	}
 
 	size := humanize.Bytes(uint64(len(data)))
