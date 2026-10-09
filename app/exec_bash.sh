@@ -53,6 +53,9 @@ EOF
     target="clip"
   fi
 
+  local is_directory
+  is_directory=false
+
   if [ ! -t 0 ]; then
     local name data size
 
@@ -71,8 +74,7 @@ EOF
       return 255
     fi
 
-    local name size data is_directory
-    is_directory=false
+    local name size data
 
     if [ -d "$source" ]; then
       is_directory=true
@@ -103,6 +105,8 @@ EOF
       check_input "$data" "$size" || return 255
     fi
   fi
+
+  echo $is_directory
 
   [ -n "$TMUX" ] && tmux set -g allow-passthrough on
 
