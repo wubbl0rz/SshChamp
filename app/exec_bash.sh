@@ -48,6 +48,7 @@ EOF
   if [ "$2" = "--clip" ]; then
     if ! "$CHAMP_HAS_CLIP"; then
       _champ_err "clipboard on local machine not available"
+      return 255
     fi
     target="clip"
   fi
@@ -167,6 +168,27 @@ EOF
   fi
 
   ssh -t "$@" "/bin/bash -c $(printf "%q" "$(_champ_init --show); _champ_init; exec bash -l")"
+)
+
+champ_save() (
+  local file_name="./champ_init.sh"
+
+  usage() {
+    cat <<EOF
+Usage: champ_save  -  save all champ_* functions to a script ($file_name)
+EOF
+  }
+
+  if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    usage
+    return 0
+  fi
+
+  echo "#!/bin/bash" > "$file_name"
+  _champ_init --show >> "$file_name"
+  echo "_champ_init; exec /bin/bash --login" >> "$file_name"
+
+  chmod +x "$file_name"
 )
 
 _champ_init
