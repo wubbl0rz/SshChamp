@@ -3,7 +3,7 @@ package ui
 import (
 	"app/tty"
 	"errors"
-	"strconv"
+	"fmt"
 	"sync/atomic"
 
 	tea "charm.land/bubbletea/v2"
@@ -11,32 +11,34 @@ import (
 	"charm.land/huh/v2/spinner"
 )
 
-func ShowSpinner(prefix string, callback func(setPercentage func(percentage uint32))) (bool, error) {
+type ProgressFunc func(percentage uint32)
+
+func ShowSpinner[T any](prefix string, update func(setProgress ProgressFunc) T) (T, error) {
 	percentage := atomic.Uint32{}
+
+	setProgress := func(p uint32) {
+		percentage.Store(min(p, 100))
+	}
 
 	input := tty.Stdin.PauseRedirect()
 	defer tty.Stdin.ResumeRedirect()
 
+	var retVal T
+
 	s := spinner.New().WithInput(input).Title("").Action(func() {
-		callback(func(p uint32) {
-			percentage.Store(min(p, 100))
-		})
+		retVal = update(setProgress)
 	})
 
 	s.WithViewHook(func(v tea.View) tea.View {
-		s.Title(prefix + "(" + strconv.Itoa(int(percentage.Load())) + "%)")
+		s.Title(fmt.Sprintf("%s(%d%%)", prefix, percentage.Load()))
 		v.AltScreen = true
 
 		return v
 	})
 
-	if err := s.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return false, nil
-		}
-
-		return false, err
+	if err := s.Run(); !errors.Is(err, huh.ErrUserAborted) {
+		return retVal, err
 	}
 
-	return true, nil
+	return retVal, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"app/helper"
 	"app/tty"
 	"app/ui"
 	"bytes"
@@ -18,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/creack/pty"
 	"github.com/dustin/go-humanize"
@@ -142,11 +142,17 @@ func exitCode(err error) int {
 // TODO: copy to clipboard
 // TODO: handle images (inline ==1)
 func handleFile(args map[string]string, data []byte) (bool, error) {
-	if args["inline"] == "1" {
+	parsedArgs, err := helper.ParseFileTransfer(args)
+
+	if err != nil {
+		return true, err
+	}
+
+	if parsedArgs.IsInline {
 		return false, nil
 	}
 
-	if t, ok := args["target"]; ok && t == "clip" {
+	if parsedArgs.Target == helper.TargetClip {
 		err := clipboard.Init()
 
 		if err != nil {
@@ -163,37 +169,14 @@ func handleFile(args map[string]string, data []byte) (bool, error) {
 	dir := filepath.Join(home, "Downloads", "SshChamp")
 
 	//todo: escape and sanitize all parameters
-	host := ""
 
-	if h, ok := args["host"]; ok {
-		host = h
-	}
+	dir = filepath.Join(dir, parsedArgs.Host)
 
-	// todo parse into struct all the args
+	timestamp := "." + parsedArgs.Timestamp
 
-	d, ok := args["directory"]
-	if !ok {
-		return true, fmt.Errorf("missing directory argument")
-	}
+	fullPath := filepath.Join(dir, parsedArgs.Name+timestamp)
 
-	isDirectory, err := strconv.ParseBool(d)
-	if err != nil {
-		return true, err
-	}
-
-	dir = filepath.Join(dir, host)
-
-	//TODO: make better :p
-	name := filepath.Base(args["name"]) // strip ../ or other paths only keep last element
-	if name == "" || name == "." || name == "/" || name == ".." {
-		return false, nil
-	}
-
-	timestamp := "." + time.Now().Format("2006-01-02_15:04:05")
-
-	fullPath := filepath.Join(dir, name+timestamp)
-
-	result, err := ui.ShowConfirmPrompt("New file (" + name + ") from: " + host + ". Accept?")
+	result, err := ui.ShowConfirmPrompt("New file (" + parsedArgs.Name + ") from: " + parsedArgs.Host + ". Accept?")
 
 	if err != nil || !result {
 		return true, err
@@ -201,25 +184,26 @@ func handleFile(args map[string]string, data []byte) (bool, error) {
 
 	_ = os.MkdirAll(dir, 0o750)
 
-	if isDirectory {
-		nameWithoutExt := strings.TrimSuffix(name, ".tar")
-		if err := Untar(data, filepath.Join(dir, nameWithoutExt+timestamp)); err != nil {
-			return true, err
-		}
-	} else {
-		if err := os.WriteFile(fullPath, data, 0o644); err != nil {
-			return true, err
-		}
-	}
-
 	size := humanize.Bytes(uint64(len(data)))
 
-	_, err = ui.ShowSpinner(size, func(setPercentage func(percentage uint32)) {
-		for p := range uint32(100) {
-			setPercentage(p)
-			time.Sleep(time.Millisecond * 5)
+	fsErr, _ := ui.ShowSpinner(size, func(setProgress ui.ProgressFunc) error {
+		if parsedArgs.IsDirectory {
+			nameWithoutExt := strings.TrimSuffix(parsedArgs.Name, ".tar")
+			if err := Untar(data, filepath.Join(dir, nameWithoutExt+timestamp)); err != nil {
+				return err
+			}
+		} else {
+			if err := os.WriteFile(fullPath, data, 0o644); err != nil {
+				return err
+			}
 		}
+
+		return nil
 	})
+
+	if fsErr != nil {
+		return true, fsErr
+	}
 
 	msg := fmt.Sprintf("\r\n%s (%s)\r\n", fullPath, size)
 	_ = notify("📥 File saved", msg)
